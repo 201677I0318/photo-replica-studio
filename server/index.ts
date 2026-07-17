@@ -23,7 +23,10 @@ const uploadFields: multer.Field[] = [
   { name: "current", maxCount: 1 },
 ];
 const analysisTimeoutMs = Math.max(30_000, Number(process.env.ANALYSIS_TIMEOUT_MS || 240_000));
-const imageGenerationTimeoutMs = Math.max(60_000, Number(process.env.IMAGE_GENERATION_TIMEOUT_MS || 300_000));
+const imageGenerationInactivityTimeoutMs = Math.max(
+  60_000,
+  Number(process.env.IMAGE_GENERATION_INACTIVITY_TIMEOUT_MS || process.env.IMAGE_GENERATION_TIMEOUT_MS || 300_000),
+);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -46,6 +49,8 @@ app.get("/api/status", (_request, response) => {
     imageConfigured: imageGenerationConfig.configured,
     imageModel: imageGenerationConfig.model,
     imageQuality: imageGenerationConfig.defaultQuality,
+    imageStream: imageGenerationConfig.stream,
+    imageEndpointMode: imageGenerationConfig.endpointMode,
   });
 });
 
@@ -62,29 +67,83 @@ app.post("/api/demo", (request, response) => {
 app.post(
   "/api/generate-image",
   upload.fields(uploadFields),
-  async (request, response, next) => {
+  async (request, response) => {
+    const files = request.files as Record<string, Express.Multer.File[]> | undefined;
+    const reference = files?.reference?.[0];
+    const current = files?.current?.[0];
+    const mode: AnalysisMode = request.body.mode === "compare" ? "compare" : "reference";
+    const prompt = String(request.body.prompt || "").trim().slice(0, 12_000);
+
+    if (!reference) {
+      response.status(400).json({ error: "生成照片需要原始参考图。" });
+      return;
+    }
+    if (mode === "compare" && !current) {
+      response.status(400).json({ error: "风格迁移需要用户成片作为编辑底图。" });
+      return;
+    }
+    if (prompt.length < 40) {
+      response.status(400).json({ error: "提示词过短，请保留必要的场景、光线和约束说明。" });
+      return;
+    }
+
+    const startedAt = Date.now();
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), imageGenerationTimeoutMs);
+    let finished = false;
+    let timedOut = false;
+    let progress = 10;
+    let currentMessage = "素材已接收";
+    let inactivityTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    response.status(200);
+    response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("Connection", "keep-alive");
+    response.setHeader("X-Accel-Buffering", "no");
+    response.flushHeaders();
+
+    const send = (payload: Record<string, unknown>) => {
+      if (!response.destroyed && !response.writableEnded) {
+        response.write(`${JSON.stringify(payload)}\n`);
+      }
+    };
+    const sendProgress = (nextProgress: number, message: string, detail: string) => {
+      progress = Math.max(progress, nextProgress);
+      currentMessage = message;
+      send({
+        type: "progress",
+        progress,
+        message,
+        detail,
+        elapsedMs: Date.now() - startedAt,
+      });
+    };
+    const resetInactivityTimeout = () => {
+      if (inactivityTimeout) clearTimeout(inactivityTimeout);
+      inactivityTimeout = setTimeout(() => {
+        timedOut = true;
+        abortController.abort();
+      }, imageGenerationInactivityTimeoutMs);
+    };
+
+    sendProgress(10, "素材已接收", "正在准备图像编辑请求");
+    resetInactivityTimeout();
+
+    const heartbeat = setInterval(() => {
+      send({
+        type: "heartbeat",
+        progress,
+        message: currentMessage,
+        detail: "浏览器连接正常，正在等待图像模型返回新事件",
+        elapsedMs: Date.now() - startedAt,
+      });
+    }, 10_000);
+
+    response.on("close", () => {
+      if (!finished) abortController.abort();
+    });
+
     try {
-      const files = request.files as Record<string, Express.Multer.File[]> | undefined;
-      const reference = files?.reference?.[0];
-      const current = files?.current?.[0];
-      const mode: AnalysisMode = request.body.mode === "compare" ? "compare" : "reference";
-      const prompt = String(request.body.prompt || "").trim().slice(0, 12_000);
-
-      if (!reference) {
-        response.status(400).json({ error: "生成照片需要原始参考图。" });
-        return;
-      }
-      if (mode === "compare" && !current) {
-        response.status(400).json({ error: "风格迁移需要用户成片作为编辑底图。" });
-        return;
-      }
-      if (prompt.length < 40) {
-        response.status(400).json({ error: "提示词过短，请保留必要的场景、光线和约束说明。" });
-        return;
-      }
-
       const result = await generateStyledImage({
         mode,
         reference,
@@ -93,16 +152,59 @@ app.post(
         size: normalizeImageSize(request.body.size),
         quality: normalizeImageQuality(request.body.quality),
         signal: abortController.signal,
+        onActivity: (activity) => {
+          resetInactivityTimeout();
+
+          if (activity.type === "request_started") {
+            sendProgress(20, "图像模型已开始处理", "请求已提交，等待首张预览");
+            return;
+          }
+          if (activity.type === "partial") {
+            progress = Math.max(progress, 70);
+            currentMessage = "已收到局部预览";
+            send({
+              type: "partial",
+              progress,
+              message: currentMessage,
+              detail: "模型仍在细化最终图像",
+              imageDataUrl: activity.imageDataUrl,
+              index: activity.index,
+              elapsedMs: Date.now() - startedAt,
+            });
+            return;
+          }
+
+          sendProgress(90, "最终图像已生成", "正在传输完整结果");
+        },
       });
-      response.json(result);
+
+      progress = 100;
+      currentMessage = "生成完成";
+      send({
+        type: "result",
+        progress,
+        message: currentMessage,
+        data: result,
+        elapsedMs: Date.now() - startedAt,
+      });
+      finished = true;
+      response.end();
     } catch (error) {
-      if (abortController.signal.aborted) {
-        response.status(504).json({ error: "图像生成等待超时，请降低质量后重试。" });
-        return;
+      if (!response.destroyed) {
+        const message = timedOut
+          ? `上游图像模型超过 ${Math.round(imageGenerationInactivityTimeoutMs / 60_000)} 分钟没有返回新事件，已停止本次请求。`
+          : error instanceof Error && error.name === "AbortError"
+            ? "图像生成已取消。"
+            : error instanceof Error
+              ? error.message
+              : "图像生成失败，请稍后重试。";
+        send({ type: "error", error: message, elapsedMs: Date.now() - startedAt });
+        finished = true;
+        response.end();
       }
-      next(error);
     } finally {
-      clearTimeout(timeout);
+      clearInterval(heartbeat);
+      if (inactivityTimeout) clearTimeout(inactivityTimeout);
     }
   },
 );

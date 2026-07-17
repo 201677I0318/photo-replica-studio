@@ -46,6 +46,16 @@ interface GeneratedImage {
   quality: ImageQuality;
 }
 
+interface GenerationStreamEvent {
+  type: "progress" | "partial" | "heartbeat" | "result" | "error";
+  progress?: number;
+  message?: string;
+  detail?: string;
+  imageDataUrl?: string;
+  data?: GeneratedImage;
+  error?: string;
+}
+
 function fallbackAiAdvice(report: PhotoReport): AiImageAdvice {
   const palette = report.visualSignature.palette.map((color) => `${color.name} ${color.hex}`).join("、");
   return {
@@ -130,9 +140,13 @@ export function ReportView({
   const [imageSize, setImageSize] = useState<ImageSize>("1024x1536");
   const [imageQuality, setImageQuality] = useState<ImageQuality>("medium");
   const [generatedImage, setGeneratedImage] = useState<GeneratedImage | null>(null);
+  const [partialImage, setPartialImage] = useState("");
   const [generationError, setGenerationError] = useState("");
   const [generating, setGenerating] = useState(false);
   const [generationElapsed, setGenerationElapsed] = useState(0);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [generationStatus, setGenerationStatus] = useState("正在准备生成请求");
+  const [generationDetail, setGenerationDetail] = useState("上传完成后会持续显示模型活动");
   const [copyMessage, setCopyMessage] = useState("");
   const generationController = useRef<AbortController | null>(null);
   const visibleTabs = tabs.filter((tab) => tab.id !== "compare" || report.comparison.enabled);
@@ -140,6 +154,7 @@ export function ReportView({
   useEffect(() => {
     setAiPrompt(aiAdvice.prompt);
     setGeneratedImage(null);
+    setPartialImage("");
     setGenerationError("");
   }, [response.requestId]);
 
@@ -162,6 +177,11 @@ export function ReportView({
     generationController.current = controller;
     setGenerating(true);
     setGenerationElapsed(0);
+    setGenerationProgress(0);
+    setGenerationStatus("正在上传生成素材");
+    setGenerationDetail("请保持当前页面打开");
+    setGeneratedImage(null);
+    setPartialImage("");
     setGenerationError("");
 
     try {
@@ -179,9 +199,54 @@ export function ReportView({
         body: form,
         signal: controller.signal,
       });
-      const payload = await result.json() as GeneratedImage & { error?: string };
-      if (!result.ok) throw new Error(payload.error || "图像生成失败，请稍后重试。");
-      setGeneratedImage(payload);
+
+      if (!result.ok) {
+        const payload = await result.json().catch(() => ({})) as { error?: string };
+        throw new Error(payload.error || "图像生成失败，请稍后重试。");
+      }
+      if (!result.body) throw new Error("浏览器没有收到图像生成数据流。");
+
+      const reader = result.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed = false;
+
+      const handleEvent = (event: GenerationStreamEvent) => {
+        if (typeof event.progress === "number") {
+          setGenerationProgress((currentProgress) => Math.max(currentProgress, event.progress ?? 0));
+        }
+        if (event.message) setGenerationStatus(event.message);
+        if (event.detail) setGenerationDetail(event.detail);
+
+        if (event.type === "partial" && event.imageDataUrl) {
+          setPartialImage(event.imageDataUrl);
+          return;
+        }
+        if (event.type === "result" && event.data) {
+          completed = true;
+          setGeneratedImage(event.data);
+          setPartialImage("");
+          return;
+        }
+        if (event.type === "error") {
+          throw new Error(event.error || "图像生成失败，请稍后重试。");
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.trim()) handleEvent(JSON.parse(line) as GenerationStreamEvent);
+        }
+        if (done) break;
+      }
+
+      if (buffer.trim()) handleEvent(JSON.parse(buffer) as GenerationStreamEvent);
+      if (!completed) throw new Error("图像数据流已结束，但没有收到最终结果。");
     } catch (error) {
       setGenerationError(error instanceof DOMException && error.name === "AbortError"
         ? "已取消本次生成。"
@@ -192,11 +257,7 @@ export function ReportView({
     }
   };
 
-  const generationMessage = generationElapsed < 15_000
-    ? "素材已提交，正在等待图像模型开始处理"
-    : generationElapsed < 60_000
-      ? "图像模型正在生成完整画面"
-      : "高质量图像需要更多时间，连接仍在等待结果";
+  const previewImage = generatedImage?.imageDataUrl || partialImage;
 
   return (
     <main className="report-shell">
@@ -442,15 +503,34 @@ export function ReportView({
                 </div>
               </fieldset>
 
-              <div className={`generated-preview ${generatedImage ? "has-image" : ""}`}>
-                {generatedImage ? (
-                  <img src={generatedImage.imageDataUrl} alt="AI 生成的同风格照片" />
+              <div className={`generated-preview ${previewImage ? "has-image" : ""} ${partialImage ? "has-partial" : ""}`}>
+                {previewImage ? (
+                  <>
+                    <img src={previewImage} alt={partialImage ? "AI 生成中的局部预览" : "AI 生成的同风格照片"} />
+                    {generating && (
+                      <div className="generation-stream-overlay">
+                        <div>
+                          <LoaderCircle className="spin" size={17} />
+                          <strong>{generationStatus}</strong>
+                          <span>{generationDetail}</span>
+                        </div>
+                        <div className="generation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={generationProgress}>
+                          <i style={{ width: `${generationProgress}%` }} />
+                        </div>
+                        <small>{generationProgress}% · 已等待 {Math.floor(generationElapsed / 60_000).toString().padStart(2, "0")}:{Math.floor((generationElapsed % 60_000) / 1000).toString().padStart(2, "0")}</small>
+                        <button type="button" onClick={() => generationController.current?.abort()}>取消生成</button>
+                      </div>
+                    )}
+                  </>
                 ) : generating ? (
                   <div className="generation-wait">
                     <LoaderCircle className="spin" size={30} />
-                    <strong>{generationMessage}</strong>
-                    <span>已等待 {Math.floor(generationElapsed / 60_000).toString().padStart(2, "0")}:{Math.floor((generationElapsed % 60_000) / 1000).toString().padStart(2, "0")}</span>
-                    <i className="indeterminate"><b /></i>
+                    <strong>{generationStatus}</strong>
+                    <p>{generationDetail}</p>
+                    <span>{generationProgress}% · 已等待 {Math.floor(generationElapsed / 60_000).toString().padStart(2, "0")}:{Math.floor((generationElapsed % 60_000) / 1000).toString().padStart(2, "0")}</span>
+                    <div className="generation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={generationProgress}>
+                      <i style={{ width: `${generationProgress}%` }} />
+                    </div>
                     <button type="button" onClick={() => generationController.current?.abort()}>取消生成</button>
                   </div>
                 ) : (

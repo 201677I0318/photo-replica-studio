@@ -379,15 +379,24 @@ p { line-height: 1.65; }
 .option-segmented button.active { background: white; color: var(--ink); box-shadow: 0 1px 2px rgba(20, 22, 26, .08), 0 2px 6px rgba(20, 22, 26, .04); }
 .generated-preview { position: relative; width: 100%; aspect-ratio: 4 / 5; display: grid; place-items: center; margin-top: 22px; overflow: hidden; border: 1px dashed #c2c6cb; border-radius: 8px; background: #f0f1f3; }
 .generated-preview.has-image { border-style: solid; background: #e9ebed; }
+.generated-preview.has-partial { border-color: #8eaa9a; box-shadow: 0 0 0 3px rgba(83, 119, 99, .08); }
 .generated-preview img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .generation-empty, .generation-wait { display: grid; justify-items: center; gap: 9px; padding: 25px; color: #7b867f; text-align: center; }
 .generation-empty strong, .generation-wait strong { color: #4e5a53; font-size: 11px; }
 .generation-empty span, .generation-wait span { font: 9px ui-monospace, monospace; }
+.generation-wait p { max-width: 290px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .generation-wait svg { color: var(--accent-dark); }
-.generation-wait button { border: 0; background: transparent; color: var(--accent-dark); cursor: pointer; font-size: 10px; text-decoration: underline; text-underline-offset: 3px; }
-.indeterminate { width: min(220px, 70%); height: 3px; margin: 5px 0; overflow: hidden; border-radius: 2px; background: #d4dbd6; }
-.indeterminate b { width: 42%; height: 100%; display: block; border-radius: inherit; background: var(--accent); animation: indeterminate-slide 1.5s ease-in-out infinite; }
-@keyframes indeterminate-slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(350%); } }
+.generation-wait button, .generation-stream-overlay button { border: 0; background: transparent; color: var(--accent-dark); cursor: pointer; font-size: 10px; text-decoration: underline; text-underline-offset: 3px; }
+.generation-progress { width: min(260px, 78%); height: 4px; overflow: hidden; border-radius: 3px; background: #d4dbd6; }
+.generation-progress i { width: 0; height: 100%; display: block; border-radius: inherit; background: var(--accent); transition: width .45s ease; }
+.generation-stream-overlay { position: absolute; right: 10px; bottom: 10px; left: 10px; display: grid; grid-template-columns: 1fr auto; gap: 9px 12px; align-items: center; padding: 12px 13px; border: 1px solid rgba(213, 226, 219, .9); border-radius: 7px; background: rgba(250, 251, 250, .92); box-shadow: 0 8px 24px rgba(25, 36, 30, .12); backdrop-filter: blur(10px); }
+.generation-stream-overlay > div:first-child { min-width: 0; display: grid; grid-template-columns: 22px 1fr; align-items: center; }
+.generation-stream-overlay svg { grid-row: 1 / 3; color: var(--accent-dark); }
+.generation-stream-overlay strong { overflow: hidden; color: #35463c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.generation-stream-overlay span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.generation-stream-overlay .generation-progress { grid-column: 1 / -1; width: 100%; }
+.generation-stream-overlay small { color: #68756d; font: 9px ui-monospace, monospace; }
+.generation-stream-overlay button { justify-self: end; }
 .generation-error { display: flex; gap: 8px; align-items: start; margin-top: 12px; padding: 10px 12px; border-left: 2px solid #b34a35; background: #f7e7e2; color: #7c3528; font-size: 10px; line-height: 1.5; }
 .generation-note { margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .generation-actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 15px; }

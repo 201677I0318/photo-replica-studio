@@ -56,11 +56,16 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.6-terra
 OPENAI_API_MODE=responses
 OPENAI_IMAGE_DETAIL=high
+
+# 生图服务可使用不同的 Key 和 URL；留空时回退到上方分析配置
+OPENAI_IMAGE_API_KEY=
+OPENAI_IMAGE_BASE_URL=
 OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_QUALITY=medium
+IMAGE_GENERATION_INACTIVITY_TIMEOUT_MS=300000
+
 OPENAI_REASONING_EFFORT=medium
 ANALYSIS_TIMEOUT_MS=240000
-IMAGE_GENERATION_TIMEOUT_MS=300000
 OPENAI_USER_AGENT=node
 PORT=8787
 ```
@@ -84,7 +89,9 @@ npm run dev
 OPENAI_API_MODE=chat
 ```
 
-不同 API 服务开放的模型和图像生成能力可能不同，请通过 `OPENAI_MODEL` 与 `OPENAI_IMAGE_MODEL` 分别配置。图像生成出现长时间等待时，可先将 `OPENAI_IMAGE_QUALITY` 改为 `low`，或切换为服务实际支持的图像模型。
+不同 API 服务开放的模型和图像生成能力可能不同，请通过 `OPENAI_MODEL` 与 `OPENAI_IMAGE_MODEL` 分别配置。分析与生图不在同一服务时，设置 `OPENAI_IMAGE_API_KEY` 和 `OPENAI_IMAGE_BASE_URL`；未设置时会分别回退到 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。
+
+`gpt-image-2` 的 Images Edit 请求固定使用流式传输，并请求 1 张局部预览。服务端以 NDJSON 向浏览器转发 `progress`、`partial`、`heartbeat`、`result` 和 `error` 事件。超时按“上游连续无新事件”计算，收到局部图或完成事件会重新计时；可用 `IMAGE_GENERATION_INACTIVITY_TIMEOUT_MS` 调整。图像生成较慢时，可先将 `OPENAI_IMAGE_QUALITY` 改为 `low`。
 
 ## XMP 预设
 

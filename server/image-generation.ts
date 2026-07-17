@@ -2,16 +2,21 @@ import OpenAI, { toFile } from "openai";
 import type { Express } from "express";
 import type { AnalysisMode } from "../shared/report.js";
 
-const apiKey = process.env.OPENAI_API_KEY;
-const baseURL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+const apiKey = process.env.OPENAI_IMAGE_API_KEY || process.env.OPENAI_API_KEY;
+const baseURL = process.env.OPENAI_IMAGE_BASE_URL
+  || process.env.OPENAI_BASE_URL
+  || "https://api.openai.com/v1";
 const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 const defaultQuality = parseQuality(process.env.OPENAI_IMAGE_QUALITY);
+const imageStream = imageModel.startsWith("gpt-image-2");
 const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export const imageGenerationConfig = {
   configured: Boolean(apiKey),
   model: imageModel,
   defaultQuality,
+  stream: imageStream,
+  endpointMode: process.env.OPENAI_IMAGE_BASE_URL ? "separate" : "shared-fallback",
 };
 
 export type ImageSize = "1024x1536" | "1536x1024" | "1024x1024";
@@ -25,7 +30,13 @@ interface GenerateImageArgs {
   size: ImageSize;
   quality: ImageQuality;
   signal?: AbortSignal;
+  onActivity?: (activity: ImageGenerationActivity) => void;
 }
+
+export type ImageGenerationActivity =
+  | { type: "request_started" }
+  | { type: "partial"; imageDataUrl: string; index: number }
+  | { type: "completed" };
 
 function parseQuality(value: string | undefined): ImageQuality {
   return value === "low" || value === "high" ? value : "medium";
@@ -40,7 +51,9 @@ export function normalizeImageQuality(value: unknown): ImageQuality {
 }
 
 function createClient() {
-  if (!apiKey) throw new Error("尚未配置 OPENAI_API_KEY，无法生成照片。");
+  if (!apiKey) {
+    throw new Error("尚未配置 OPENAI_IMAGE_API_KEY 或 OPENAI_API_KEY，无法生成照片。");
+  }
   return new OpenAI({
     apiKey,
     baseURL,
@@ -81,6 +94,10 @@ async function imageDataUrl(image: { b64_json?: string | null; url?: string | nu
   return `data:${type};base64,${buffer.toString("base64")}`;
 }
 
+function streamedImageDataUrl(b64Json: string, format: "png" | "webp" | "jpeg") {
+  return `data:image/${format};base64,${b64Json}`;
+}
+
 export async function generateStyledImage(args: GenerateImageArgs) {
   const client = createClient();
   const sourceFiles = args.mode === "compare"
@@ -88,23 +105,56 @@ export async function generateStyledImage(args: GenerateImageArgs) {
     : [args.reference];
   const images = await Promise.all(sourceFiles.map(uploadable));
 
-  const response = await client.images.edit({
+  const request = {
     model: imageModel,
     image: images,
     prompt: operationalPrompt(args),
     n: 1,
     size: args.size,
     quality: args.quality,
-    output_format: "jpeg",
+    output_format: "jpeg" as const,
     output_compression: 92,
     ...(imageModel.startsWith("gpt-image-2")
       ? {}
       : { input_fidelity: args.mode === "compare" ? "high" as const : "low" as const }),
-  }, { signal: args.signal });
+  };
 
+  args.onActivity?.({ type: "request_started" });
+
+  if (imageStream) {
+    const stream = await client.images.edit({
+      ...request,
+      stream: true,
+      partial_images: 1,
+    }, { signal: args.signal });
+
+    for await (const event of stream) {
+      if (event.type === "image_edit.partial_image") {
+        args.onActivity?.({
+          type: "partial",
+          imageDataUrl: streamedImageDataUrl(event.b64_json, event.output_format),
+          index: event.partial_image_index,
+        });
+        continue;
+      }
+
+      args.onActivity?.({ type: "completed" });
+      return {
+        imageDataUrl: streamedImageDataUrl(event.b64_json, event.output_format),
+        model: imageModel,
+        size: args.size,
+        quality: args.quality,
+      };
+    }
+
+    throw new Error("图像流已结束，但没有收到最终图片。");
+  }
+
+  const response = await client.images.edit(request, { signal: args.signal });
   const image = response.data?.[0];
   if (!image) throw new Error("图像模型没有返回可用图片。");
 
+  args.onActivity?.({ type: "completed" });
   return {
     imageDataUrl: await imageDataUrl(image),
     model: imageModel,
