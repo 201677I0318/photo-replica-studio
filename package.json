@@ -1,0 +1,35 @@
+{
+  "name": "photo-replica-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n web,api -c cyan,green \"vite --host 0.0.0.0\" \"tsx watch server/index.ts\"",
+    "dev:web": "vite --host 0.0.0.0",
+    "dev:api": "tsx watch server/index.ts",
+    "build": "tsc -b && vite build",
+    "start": "tsx server/index.ts",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "dotenv": "latest",
+    "express": "latest",
+    "lucide-react": "1.24.0",
+    "multer": "latest",
+    "openai": "6.46.0",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@types/express": "latest",
+    "@types/multer": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}
